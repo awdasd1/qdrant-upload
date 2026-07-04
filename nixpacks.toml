@@ -1,0 +1,25 @@
+[build]
+# Python version
+runtime = "python-3.11"
+
+# Build commands
+cmds = [
+  "pip install --upgrade pip setuptools wheel",
+  "pip install -r requirements.txt",
+  "pip install sentence-transformers qdrant-client"
+]
+
+# Start command
+start = "python main.py"
+
+# Environment variables for build
+[env]
+PYTHONUNBUFFERED = "1"
+PYTHONDONTWRITEBYTECODE = "1"
+PIP_NO_CACHE_DIR = "1"
+
+# Health check
+[health]
+enabled = true
+path = "/health"
+port = 8000

@@ -1,0 +1,9 @@
+body{font-family:Arial, sans-serif;direction:rtl;text-align:right;background:#f7f7f9;color:#222}
+.container{max-width:900px;margin:40px auto;padding:20px;background:#fff;border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+h1{margin:0 0 16px}
+.search-box{display:flex;gap:8px;margin-bottom:12px}
+.search-box input{flex:1;padding:10px 12px;font-size:16px}
+.search-box button{padding:10px 16px;font-size:16px}
+.results ul{list-style:none;padding:0}
+.results li{padding:12px;border-bottom:1px solid #eee}
+.results strong{display:block;margin-bottom:6px}

@@ -1,0 +1,85 @@
+{
+  "id": "qdrant-upload",
+  "name": "Qdrant Upload Server",
+  "description": "تطبيق رفع البيانات إلى Qdrant مع واجهة ويب",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "icon": "https://qdrant.tech/docs/assets/images/qdrant-icon.svg",
+  "source": "https://github.com/awdasd1/qdrant-upload",
+  "documentation": "https://github.com/awdasd1/qdrant-upload/blob/main/README.md",
+  "dockerfile": "Dockerfile",
+  "port": 8000,
+  "environment": [
+    {
+      "name": "QDRANT_URL",
+      "description": "رابط خادم Qdrant",
+      "default": "http://qdrant:6333",
+      "required": false
+    },
+    {
+      "name": "EMBED_API_KEY",
+      "description": "مفتاح API لخدمة التضمينات (اختياري)",
+      "default": "",
+      "required": false,
+      "sensitive": true
+    },
+    {
+      "name": "ENVIRONMENT",
+      "description": "بيئة التشغيل",
+      "default": "production",
+      "required": false
+    },
+    {
+      "name": "WORKERS",
+      "description": "عدد العمليات الموازية",
+      "default": "1",
+      "required": false
+    },
+    {
+      "name": "HOST",
+      "description": "عنوان الاستضافة",
+      "default": "0.0.0.0",
+      "required": false
+    },
+    {
+      "name": "PORT",
+      "description": "منفذ التطبيق",
+      "default": "8000",
+      "required": false
+    }
+  ],
+  "services": [
+    {
+      "id": "qdrant",
+      "name": "Qdrant Vector Database",
+      "image": "qdrant/qdrant:latest",
+      "port": 6333,
+      "volumes": [
+        "qdrant_data:/qdrant/storage"
+      ],
+      "environment": [
+        {
+          "name": "QDRANT_API_KEY",
+          "description": "مفتاح API لـ Qdrant",
+          "default": "",
+          "required": false,
+          "sensitive": true
+        }
+      ]
+    }
+  ],
+  "buildpack": "nixpacks",
+  "framework": "python",
+  "runtimeVersion": "3.11",
+  "startCommand": "python main.py",
+  "buildCommand": "pip install -r requirements.txt && pip install sentence-transformers qdrant-client",
+  "healthCheck": {
+    "enabled": true,
+    "path": "/health",
+    "port": 8000,
+    "interval": 30,
+    "timeout": 10,
+    "retries": 3,
+    "startPeriod": 40
+  }
+}

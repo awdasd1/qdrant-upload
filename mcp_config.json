@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "moaamlat": {
+      "command": "python3",
+      "args": ["/Users/maa/Downloads/madani/mcp_stdio_server.py"],
+      "description": "MoAamlat MCP Server - بحث النظام القانوني السعودي",
+      "env": {
+        "PYTHONPATH": "/Users/maa/Downloads/madani"
+      }
+    }
+  }
+}
