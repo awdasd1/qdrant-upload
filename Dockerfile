@@ -25,13 +25,13 @@ RUN mkdir -p uploads logs
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# تعريض المنفذ
-EXPOSE 8000
+# تعريض المنفذ الافتراضي لتوافق Coolify
+ENV PORT=3000
+EXPOSE 3000
 
-# Health check
+# Health check يستخدم قيمة PORT إن وُجدت
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD sh -c "curl -f http://localhost:${PORT:-3000}/health || exit 1"
 
-# تشغيل التطبيق عبر `main.py` ليقرأ متغيرات البيئة (PORT/WORKERS)
-# هذا يضمن التوافق مع Coolify وبيئات تثبيت أخرى التي تزود متغير PORT ديناميكياً
-CMD ["python", "main.py"]
+# تشغيل التطبيق باستخدام Uvicorn على المنفذ 3000 (متوافق مع Coolify)
+CMD ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "3000"]

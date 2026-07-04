@@ -22,8 +22,8 @@ git push -u origin main
 ## 3) الإعدادات المطلوبة
 
 - Build Pack: `Nixpacks`
-- Port: `8000`
-- Start Command: `python main.py`
+- Port: `3000`
+- Start Command: `uvicorn mcp_server:app --host 0.0.0.0 --port 3000`
 
 ## 4) متغيرات البيئة
 

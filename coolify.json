@@ -8,7 +8,7 @@
   "source": "https://github.com/awdasd1/qdrant-upload",
   "documentation": "https://github.com/awdasd1/qdrant-upload/blob/main/README.md",
   "dockerfile": "Dockerfile",
-  "port": 8000,
+  "port": 3000,
   "environment": [
     {
       "name": "QDRANT_URL",
@@ -71,12 +71,12 @@
   "buildpack": "nixpacks",
   "framework": "python",
   "runtimeVersion": "3.11",
-  "startCommand": "python main.py",
+  "startCommand": "uvicorn mcp_server:app --host 0.0.0.0 --port 3000",
   "buildCommand": "pip install -r requirements.txt && pip install sentence-transformers qdrant-client",
   "healthCheck": {
     "enabled": true,
     "path": "/health",
-    "port": 8000,
+    "port": 3000,
     "interval": 30,
     "timeout": 10,
     "retries": 3,
