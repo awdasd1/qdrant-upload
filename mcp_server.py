@@ -11,8 +11,16 @@ import os
 import re
 import uuid
 from datetime import datetime
-from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:  # pragma: no cover - optional dependency in some environments
+    SentenceTransformer = None
+
+try:
+    from qdrant_client import QdrantClient
+except Exception:  # pragma: no cover - optional dependency in some environments
+    QdrantClient = None
 
 app = FastAPI(title="MoAamlat MCP Server", version="0.1")
 
@@ -23,22 +31,36 @@ _qdrant_client = None
 def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
+        if SentenceTransformer is None:
+            print("Warning: sentence-transformers is not installed; local embeddings are unavailable")
+            return None
         try:
             _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         except Exception as e:
             print(f"Warning: failed to load embedding model: {e}")
     return _embedding_model
 
+
 def get_qdrant_client():
     global _qdrant_client
     if _qdrant_client is None:
+        if QdrantClient is None:
+            print("Warning: qdrant-client is not installed; Qdrant search is unavailable")
+            return None
         try:
-            _qdrant_client = QdrantClient(url='http://127.0.0.1:6333')
+            qdrant_url = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
+            qdrant_api_key = os.getenv("QDRANT_API_KEY", "")
+            if qdrant_api_key:
+                _qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            else:
+                _qdrant_client = QdrantClient(url=qdrant_url)
         except Exception as e:
             print(f"Warning: failed to connect to Qdrant: {e}")
     return _qdrant_client
 
-DATA_PATH = Path("moaamlat.json")
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "moaamlat.json"
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
 
@@ -66,21 +88,36 @@ def load_data(path: Path) -> List[dict]:
 
 DATA = load_data(DATA_PATH)
 
-UPLOADS_DIR = Path("uploads")
+UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 UPLOAD_JOBS = {}
+
+STATIC_DIR = BASE_DIR / "static"
+if not STATIC_DIR.exists():
+    STATIC_DIR.mkdir(exist_ok=True)
+    for filename in ["index.html", "script.js", "styles.css"]:
+        src = BASE_DIR / filename
+        if src.exists():
+            shutil.copy2(src, STATIC_DIR / filename)
 
 
 def normalize_query(q: str) -> str:
     return q.strip()
 
 # Mount static files directory
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/health", response_class=JSONResponse)
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/", response_class=FileResponse)
 def root():
-    index = Path("static") / "index.html"
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        index = BASE_DIR / "index.html"
     if index.exists():
         return FileResponse(index)
     return JSONResponse({"message": "MoAamlat MCP Server", "endpoints": ["/search?q=...", "/article/{article_number_or_name}", "/admin/upload"]})
