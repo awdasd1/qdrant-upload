@@ -32,5 +32,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# تشغيل التطبيق
-CMD ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# تشغيل التطبيق عبر `main.py` ليقرأ متغيرات البيئة (PORT/WORKERS)
+# هذا يضمن التوافق مع Coolify وبيئات تثبيت أخرى التي تزود متغير PORT ديناميكياً
+CMD ["python", "main.py"]
