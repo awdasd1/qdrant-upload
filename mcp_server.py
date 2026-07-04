@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import json
@@ -113,14 +113,9 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/", response_class=FileResponse)
+@app.get("/", response_class=RedirectResponse)
 def root():
-    index = STATIC_DIR / "index.html"
-    if not index.exists():
-        index = BASE_DIR / "index.html"
-    if index.exists():
-        return FileResponse(index)
-    return JSONResponse({"message": "MoAamlat MCP Server", "endpoints": ["/search?q=...", "/article/{article_number_or_name}", "/admin/upload"]})
+    return RedirectResponse(url="/admin/upload")
 
 
 @app.get("/search", response_class=JSONResponse)
