@@ -205,6 +205,25 @@ def search_semantic(
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
+@app.get("/sparse_info", response_class=JSONResponse)
+def sparse_info():
+    """
+    معلومات وتفاصيل نماذج التشفير الضئيل (BM25 Sparse Encoders) المستخدمة مطابقة للاستعلام
+    """
+    return {
+        "native_bm25": {
+            "description": "Native Python BM25 Encoder (مُشفر محلي خفيف يزيل التشكيل ويستخدم crc32 32-bit hashing)",
+            "tokenizer": "remove_diacritics(text).lower() -> regex [\\w\\u0600-\\u06FF]+",
+            "hash_function": "zlib.crc32(token.encode('utf-8')) & 0x7FFFFFFF",
+            "bm25_params": {"k1": 1.5, "b": 0.75, "avgdl": 256.0}
+        },
+        "fastembed_bm25": {
+            "description": "FastEmbed BM25 Model (Qdrant/bm25)",
+            "model_name": "Qdrant/bm25"
+        }
+    }
+
+
 @app.get("/search_hybrid", response_class=JSONResponse)
 def search_hybrid(
     q: str = Query(..., description="نص استعلام البحث الهجين"),
@@ -212,7 +231,8 @@ def search_hybrid(
     limit: int = Query(10, description="حد أقصى لعدد النتائج"),
     use_cohere: bool = Query(False, description="استخدم Cohere API بدلاً من النموذج المحلي"),
     dense_name: str = Query("", description="اسم متجه dense إذا تم استخدامه أثناء الرفع"),
-    sparse_name: str = Query("text-sparse", description="اسم متجه sparse BM25")
+    sparse_name: str = Query("text-sparse", description="اسم متجه sparse BM25"),
+    sparse_mode: str = Query("native", description="نوع نموذج BM25 المستخدم (native أو fastembed)")
 ):
     """
     البحث الهجين في Qdrant يجمع بين متجهات Dense الشبهية ومتجهات Sparse BM25 باستخدام RRF (Reciprocal Rank Fusion)
@@ -246,10 +266,14 @@ def search_hybrid(
                 raise HTTPException(status_code=503, detail="Embedding model not available")
             dense_vector = model.encode(q).tolist()
 
-        # 2. Compute Sparse Query Vector (BM25)
-        from qdrant_upload import BM25SparseEncoder
-        sparse_encoder = BM25SparseEncoder()
-        sparse_res = sparse_encoder.encode_text(q)
+        # 2. Compute Sparse Query Vector using exact encoder (native or fastembed)
+        from qdrant_upload import get_sparse_encoder
+        sparse_encoder = get_sparse_encoder(sparse_mode)
+        if hasattr(sparse_encoder, 'encode_text'):
+            sparse_res = sparse_encoder.encode_text(q)
+        else:
+            batch_res = sparse_encoder.encode_batch([q])
+            sparse_res = batch_res[0] if batch_res else {"indices": [], "values": []}
         
         from qdrant_client.http import models as rest
         sparse_vector = rest.SparseVector(
@@ -290,6 +314,7 @@ def search_hybrid(
             "query": q,
             "collection": collection,
             "search_type": "hybrid_rrf",
+            "sparse_mode": sparse_mode,
             "count": len(results),
             "results": results
         }
