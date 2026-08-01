@@ -408,6 +408,11 @@ def upload_form():
             </select>
             <p class="hint">عند التفعيل، يتم إنشاء واستخراج متجهات BM25 الضئيلة لدعم البحث الهجين (Hybrid Search) باستخدام RRF في Qdrant</p>
 
+            <label>اسم متجه BM25 الضئيل في Qdrant (Sparse Vector Name)</label>
+            <input id="sparseVectorName" name="sparse_vector_name" type="text" value="text-sparse" placeholder="مثال: text-sparse أو bm25" required />
+            <p class="hint">اسم الحقل المتجه في Qdrant (الافتراضي: text-sparse، يمكنك تغييره إلى bm25 حسب رغبتك)</p>
+
+
             <label>حجم التضمين (Vector Dimension)</label>
             <input id="vectorSize" name="vector_size" type="number" placeholder="1024" value="1024" min="1" max="4096" required />
             <p class="hint">حجم المتجه المتوقع من النموذج (مثال: 384, 768, 1024, 1536, 3072, 4096)</p>
@@ -543,7 +548,7 @@ def set_job_status(job_id: str, status: str, error: str = '', message: str = '')
             job['finished_at'] = datetime.utcnow().isoformat() + 'Z'
 
 
-def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system_name: str, qdrant_url: str, qdrant_api_key: str, embed_api_key: str, log_path: Path, upload_mode: str = 'overwrite', embedding_source: str = 'local', local_model_name: str = 'all-MiniLM-L6-v2', api_model_name: str = '', embed_api_url: str = '', vector_size: str = '1024', distance_type: str = 'cosine', cohere_input_type: str = 'classification', batch_size: str = '3000', gemini_batch_size: str = '10', sparse_mode: str = 'native'):
+def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system_name: str, qdrant_url: str, qdrant_api_key: str, embed_api_key: str, log_path: Path, upload_mode: str = 'overwrite', embedding_source: str = 'local', local_model_name: str = 'all-MiniLM-L6-v2', api_model_name: str = '', embed_api_url: str = '', vector_size: str = '1024', distance_type: str = 'cosine', cohere_input_type: str = 'classification', batch_size: str = '3000', gemini_batch_size: str = '10', sparse_mode: str = 'native', sparse_vector_name: str = 'text-sparse'):
     set_job_status(job_id, 'running')
     env = os.environ.copy()
     if qdrant_api_key:
@@ -577,7 +582,8 @@ def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system
         '--cohere-input-type', cohere_input_type,
         '--gemini-batch-size', gemini_batch_size,
         '--enable-sparse', 'true' if sparse_mode != 'none' else 'false',
-        '--sparse-mode', sparse_mode
+        '--sparse-mode', sparse_mode,
+        '--sparse-vector-name', sparse_vector_name
     ]
     with open(log_path, 'w', encoding='utf-8') as logf:
         proc = subprocess.run(cmd, env=env, cwd=str(Path(__file__).parent), stdout=logf, stderr=logf)
@@ -588,7 +594,7 @@ def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system
 
 
 @app.post("/admin/upload", response_class=JSONResponse)
-def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), system_name: str = Form(...), collection: str = Form(...), qdrant_url: str = Form(...), qdrant_api_key: str = Form(''), embed_api_key: str = Form(''), upload_mode: str = Form('overwrite'), embedding_source: str = Form('local'), local_model_name: str = Form('all-MiniLM-L6-v2'), api_model_name: str = Form(''), embed_api_url: str = Form(''), vector_size: str = Form('1024'), distance_type: str = Form('cosine'), cohere_input_type: str = Form('classification'), batch_size: str = Form('3000'), gemini_batch_size: str = Form('10'), sparse_mode: str = Form('native')):
+def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), system_name: str = Form(...), collection: str = Form(...), qdrant_url: str = Form(...), qdrant_api_key: str = Form(''), embed_api_key: str = Form(''), upload_mode: str = Form('overwrite'), embedding_source: str = Form('local'), local_model_name: str = Form('all-MiniLM-L6-v2'), api_model_name: str = Form(''), embed_api_url: str = Form(''), vector_size: str = Form('1024'), distance_type: str = Form('cosine'), cohere_input_type: str = Form('classification'), batch_size: str = Form('3000'), gemini_batch_size: str = Form('10'), sparse_mode: str = Form('native'), sparse_vector_name: str = Form('text-sparse')):
     upload_id = str(uuid.uuid4())
     uploads_dir = UPLOADS_DIR
     extension = Path(file.filename).suffix.lower() if file.filename else '.json'
@@ -610,7 +616,7 @@ def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...
         'created_at': str(Path().absolute()),
         'finished_at': '',
     }
-    background_tasks.add_task(_run_uploader_script, upload_id, upload_path, collection, system_name, qdrant_url, qdrant_api_key, embed_api_key, log_path, upload_mode, embedding_source, local_model_name, api_model_name, embed_api_url, vector_size, distance_type, cohere_input_type, batch_size, gemini_batch_size, sparse_mode)
+    background_tasks.add_task(_run_uploader_script, upload_id, upload_path, collection, system_name, qdrant_url, qdrant_api_key, embed_api_key, log_path, upload_mode, embedding_source, local_model_name, api_model_name, embed_api_url, vector_size, distance_type, cohere_input_type, batch_size, gemini_batch_size, sparse_mode, sparse_vector_name)
     return {'status': 'started', 'job_id': upload_id, 'collection': collection, 'log': str(log_path)}
 
 
