@@ -338,7 +338,23 @@ def create_collection(client: QdrantClient, collection_name: str, vector_size: i
                     create_kwargs["sparse_vectors_config"] = sparse_config
                 client.create_collection(**create_kwargs)
                 print(f"[Qdrant] Created collection '{collection_name}' (Sparse enabled: {enable_sparse})")
-            # If exists, just continue without deleting
+
+        # Create text payload index on 'content' field for full-text search filtering
+        try:
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name="content",
+                field_schema=rest.TextIndexParams(
+                    type=rest.TextIndexType.TEXT,
+                    tokenizer=rest.TokenizerType.WORD,
+                    min_token_len=2,
+                    max_token_len=30,
+                    lowercase=True,
+                ),
+            )
+            print(f"[Qdrant] Created text payload index on 'content' for '{collection_name}'")
+        except Exception as e:
+            pass
     except Exception as e:
         print("Warning creating collection:", e)
 
