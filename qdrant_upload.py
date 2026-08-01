@@ -47,10 +47,14 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as rest
 
 # Embeddings (sentence-transformers)
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
 import httpx
 import time
 import urllib.parse as urlparse
+
 
 
 def remove_diacritics(text: str) -> str:
@@ -62,6 +66,92 @@ def remove_diacritics(text: str) -> str:
     # إزالة جميع علامات التشكيل العربية
     arabic_diacritics = re.compile(r'[\u064B-\u065F]')
     return arabic_diacritics.sub('', text)
+
+
+class BM25SparseEncoder:
+    """
+    Native BM25 Sparse Vector Encoder for Qdrant Hybrid Search.
+    Tokenizes text, calculates BM25 term weights, and maps terms to uint32 sparse vector indices.
+    No external heavy dependencies or neural weights required.
+    """
+    def __init__(self, k1: float = 1.5, b: float = 0.75, avgdl: float = 256.0):
+        self.k1 = k1
+        self.b = b
+        self.avgdl = avgdl
+
+    @staticmethod
+    def tokenize(text: str) -> list:
+        if not text:
+            return []
+        text = remove_diacritics(text).lower()
+        # Extract word tokens (Arabic & alphanumeric)
+        tokens = re.findall(r'[\w\u0600-\u06FF]+', text)
+        return [t for t in tokens if len(t) > 1]
+
+    @staticmethod
+    def token_to_index(token: str) -> int:
+        import zlib
+        # Produce positive 32-bit integer index compatible with Qdrant sparse index
+        return zlib.crc32(token.encode('utf-8')) & 0x7FFFFFFF
+
+    def encode_text(self, text: str) -> dict:
+        import collections
+        tokens = self.tokenize(text)
+        if not tokens:
+            return {"indices": [], "values": []}
+
+        doc_len = len(tokens)
+        counts = collections.Counter(tokens)
+
+        indices = []
+        values = []
+
+        for token, count in counts.items():
+            idx = self.token_to_index(token)
+            tf = count
+            numerator = tf * (self.k1 + 1.0)
+            denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avgdl))
+            weight = numerator / denominator
+
+            indices.append(idx)
+            values.append(float(round(weight, 4)))
+
+        # Sort indices as recommended for Qdrant sparse vectors
+        sorted_pairs = sorted(zip(indices, values), key=lambda x: x[0])
+        sorted_indices = [p[0] for p in sorted_pairs]
+        sorted_values = [p[1] for p in sorted_pairs]
+
+        return {"indices": sorted_indices, "values": sorted_values}
+
+    def encode_batch(self, texts: list) -> list:
+        return [self.encode_text(t) for t in texts]
+
+
+def get_sparse_encoder(mode: str = "native"):
+    """Factory function for sparse BM25 encoder"""
+    if mode == "fastembed":
+        try:
+            from fastembed import SparseTextEmbedding
+            class FastEmbedSparseEncoder:
+                def __init__(self):
+                    print("[FastEmbed] Loading Qdrant/bm25 model...")
+                    self.model = SparseTextEmbedding(model_name="Qdrant/bm25")
+
+                def encode_batch(self, texts: list) -> list:
+                    embeddings = list(self.model.embed(texts))
+                    res = []
+                    for emb in embeddings:
+                        idxs = emb.indices.tolist() if hasattr(emb.indices, 'tolist') else list(emb.indices)
+                        vals = emb.values.tolist() if hasattr(emb.values, 'tolist') else list(emb.values)
+                        res.append({"indices": idxs, "values": vals})
+                    return res
+
+            return FastEmbedSparseEncoder()
+        except ImportError:
+            print("⚠️  fastembed not installed. Falling back to native BM25SparseEncoder.")
+            return BM25SparseEncoder()
+    return BM25SparseEncoder()
+
 
 
 def parse_text_to_articles(text: str, system_name: str):
@@ -191,7 +281,7 @@ def make_payload(item, pid=None, source_type='txt'):
     return payload
 
 
-def create_collection(client: QdrantClient, collection_name: str, vector_size: int, upload_mode: str = 'overwrite', distance_type: str = 'cosine'):
+def create_collection(client: QdrantClient, collection_name: str, vector_size: int, upload_mode: str = 'overwrite', distance_type: str = 'cosine', enable_sparse: bool = False, dense_vector_name: str = "", sparse_vector_name: str = "text-sparse"):
     # Map distance type string to Qdrant Distance enum
     distance_map = {
         'cosine': rest.Distance.COSINE,
@@ -200,6 +290,23 @@ def create_collection(client: QdrantClient, collection_name: str, vector_size: i
         'manhattan': rest.Distance.MANHATTAN,
     }
     distance_metric = distance_map.get(distance_type.lower(), rest.Distance.COSINE)
+    
+    # Configure vectors_config
+    if dense_vector_name:
+        vectors_config = {
+            dense_vector_name: rest.VectorParams(size=vector_size, distance=distance_metric)
+        }
+    else:
+        vectors_config = rest.VectorParams(size=vector_size, distance=distance_metric)
+
+    # Configure sparse_vectors_config if enabled
+    sparse_config = None
+    if enable_sparse:
+        sparse_config = {
+            sparse_vector_name: rest.SparseVectorParams(
+                index=rest.SparseIndexParams(on_disk=False)
+            )
+        }
     
     # Safe create: check existence, delete if exists (for overwrite mode), then create
     try:
@@ -218,16 +325,19 @@ def create_collection(client: QdrantClient, collection_name: str, vector_size: i
                     client.delete_collection(collection_name)
                 except Exception as e:
                     print("Warning deleting existing collection:", e)
-            client.create_collection(
-                collection_name=collection_name,
-                vectors_config=rest.VectorParams(size=vector_size, distance=distance_metric),
-            )
+            
+            create_kwargs = {"collection_name": collection_name, "vectors_config": vectors_config}
+            if sparse_config:
+                create_kwargs["sparse_vectors_config"] = sparse_config
+            client.create_collection(**create_kwargs)
+            print(f"[Qdrant] Created collection '{collection_name}' (Sparse enabled: {enable_sparse})")
         else:  # append mode
             if not exists:
-                client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=rest.VectorParams(size=vector_size, distance=distance_metric),
-                )
+                create_kwargs = {"collection_name": collection_name, "vectors_config": vectors_config}
+                if sparse_config:
+                    create_kwargs["sparse_vectors_config"] = sparse_config
+                client.create_collection(**create_kwargs)
+                print(f"[Qdrant] Created collection '{collection_name}' (Sparse enabled: {enable_sparse})")
             # If exists, just continue without deleting
     except Exception as e:
         print("Warning creating collection:", e)
@@ -554,6 +664,8 @@ def upload(args):
         raise ValueError("EMBED_API_KEY environment variable not set for API embedding mode. Please provide your Cohere API key in the web form or set it as an environment variable before running the server.")
 
     if not use_api:
+        if SentenceTransformer is None:
+            raise ImportError("sentence-transformers is not installed in the environment. Please install sentence-transformers or use external API embeddings.")
         model = SentenceTransformer(args.model)
         vector_size = model.get_sentence_embedding_dimension()
         print("Using local embedding model:", args.model, "dim=", vector_size)
@@ -575,9 +687,26 @@ def upload(args):
     if auth_headers:
         print(f"Using detected auth headers for Qdrant: {list(auth_headers.keys())}")
 
+    # Initialize Sparse Encoder if requested
+    enable_sparse = bool(args.enable_sparse) or (args.sparse_mode and args.sparse_mode != 'none')
+    sparse_encoder = None
+    if enable_sparse:
+        sparse_mode = args.sparse_mode if args.sparse_mode else 'native'
+        print(f"[Sparse] Enabling BM25 Sparse Vector encoding with mode='{sparse_mode}'")
+        sparse_encoder = get_sparse_encoder(sparse_mode)
+
     client = make_qdrant_client(chosen_url, headers=auth_headers)
 
-    create_collection(client, args.collection, vector_size, upload_mode=args.upload_mode, distance_type=args.distance_type)
+    create_collection(
+        client,
+        args.collection,
+        vector_size,
+        upload_mode=args.upload_mode,
+        distance_type=args.distance_type,
+        enable_sparse=enable_sparse,
+        dense_vector_name=args.dense_vector_name,
+        sparse_vector_name=args.sparse_vector_name
+    )
 
     batch_texts = []
     ids = []
@@ -596,6 +725,8 @@ def upload(args):
             else:
                 vectors = model.encode(batch_texts, show_progress_bar=False, convert_to_numpy=True)
 
+            sparse_vectors = sparse_encoder.encode_batch(batch_texts) if enable_sparse else None
+
             # Split large batches into smaller Qdrant chunks (max 500 points per upsert to avoid 32MB payload limit)
             qdrant_chunk_size = 500
             for chunk_start in range(0, len(vectors), qdrant_chunk_size):
@@ -604,7 +735,27 @@ def upload(args):
                 for j in range(chunk_start, chunk_end):
                     vec = vectors[j]
                     vec_list = vec.tolist() if hasattr(vec, 'tolist') else list(vec)
-                    points.append(rest.PointStruct(id=ids[j], vector=vec_list, payload=payloads[j]))
+
+                    if enable_sparse:
+                        sp = sparse_vectors[j]
+                        sp_struct = rest.SparseVector(indices=sp["indices"], values=sp["values"])
+                        if args.dense_vector_name:
+                            point_vec = {
+                                args.dense_vector_name: vec_list,
+                                args.sparse_vector_name: sp_struct
+                            }
+                        else:
+                            point_vec = {
+                                "": vec_list,
+                                args.sparse_vector_name: sp_struct
+                            }
+                    else:
+                        if args.dense_vector_name:
+                            point_vec = {args.dense_vector_name: vec_list}
+                        else:
+                            point_vec = vec_list
+
+                    points.append(rest.PointStruct(id=ids[j], vector=point_vec, payload=payloads[j]))
                 print(f"[Qdrant] Upserting chunk {chunk_start//qdrant_chunk_size + 1}: {len(points)} points...")
                 client.upsert(collection_name=args.collection, points=points)
             
@@ -617,6 +768,8 @@ def upload(args):
         else:
             vectors = model.encode(batch_texts, show_progress_bar=False, convert_to_numpy=True)
 
+        sparse_vectors = sparse_encoder.encode_batch(batch_texts) if enable_sparse else None
+
         # Split large batches into smaller Qdrant chunks (max 500 points per upsert to avoid 32MB payload limit)
         qdrant_chunk_size = 500
         for chunk_start in range(0, len(vectors), qdrant_chunk_size):
@@ -625,11 +778,41 @@ def upload(args):
             for j in range(chunk_start, chunk_end):
                 vec = vectors[j]
                 vec_list = vec.tolist() if hasattr(vec, 'tolist') else list(vec)
-                points.append(rest.PointStruct(id=ids[j], vector=vec_list, payload=payloads[j]))
+
+                if enable_sparse:
+                    sp = sparse_vectors[j]
+                    sp_struct = rest.SparseVector(indices=sp["indices"], values=sp["values"])
+                    if args.dense_vector_name:
+                        point_vec = {
+                            args.dense_vector_name: vec_list,
+                            args.sparse_vector_name: sp_struct
+                        }
+                    else:
+                        point_vec = {
+                            "": vec_list,
+                            args.sparse_vector_name: sp_struct
+                        }
+                else:
+                    if args.dense_vector_name:
+                        point_vec = {args.dense_vector_name: vec_list}
+                    else:
+                        point_vec = vec_list
+
+                points.append(rest.PointStruct(id=ids[j], vector=point_vec, payload=payloads[j]))
             print(f"[Qdrant] Upserting final chunk {chunk_start//qdrant_chunk_size + 1}: {len(points)} points...")
             client.upsert(collection_name=args.collection, points=points)
 
     print("Upload complete")
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', '0'):
+        return False
+    return False
 
 
 if __name__ == '__main__':
@@ -650,5 +833,10 @@ if __name__ == '__main__':
     parser.add_argument('--upload-mode', type=str, default='overwrite', choices=['overwrite', 'append'], help='Upload mode: overwrite (delete and recreate) or append (add to existing collection)')
     parser.add_argument('--distance-type', type=str, default='cosine', choices=['cosine', 'dot', 'euclidean', 'manhattan'], help='Distance metric for vector similarity: cosine (default), dot, euclidean, or manhattan')
     parser.add_argument('--cohere-input-type', type=str, default='classification', choices=['search_document', 'search_query', 'classification', 'clustering'], help='Input type for Cohere embeddings (search_document, search_query, classification, clustering)')
+    parser.add_argument('--enable-sparse', type=str2bool, nargs='?', const=True, default=False, help='Enable BM25 Sparse vector encoding for hybrid search')
+    parser.add_argument('--sparse-mode', type=str, default='native', choices=['none', 'native', 'fastembed'], help='Sparse encoder implementation: native (default) or fastembed')
+    parser.add_argument('--dense-vector-name', type=str, default='', help='Name of dense vector field in Qdrant (default: "" for unnamed vector)')
+    parser.add_argument('--sparse-vector-name', type=str, default='text-sparse', help='Name of sparse vector field in Qdrant (default: text-sparse)')
     args = parser.parse_args()
     upload(args)
+

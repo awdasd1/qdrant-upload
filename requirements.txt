@@ -4,3 +4,5 @@ httpx
 qdrant-client
 sentence-transformers
 python-multipart
+fastembed
+

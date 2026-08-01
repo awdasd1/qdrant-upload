@@ -205,6 +205,98 @@ def search_semantic(
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
+@app.get("/search_hybrid", response_class=JSONResponse)
+def search_hybrid(
+    q: str = Query(..., description="نص استعلام البحث الهجين"),
+    collection: str = Query("moaamlat", description="اسم الكولكشن في Qdrant"),
+    limit: int = Query(10, description="حد أقصى لعدد النتائج"),
+    use_cohere: bool = Query(False, description="استخدم Cohere API بدلاً من النموذج المحلي"),
+    dense_name: str = Query("", description="اسم متجه dense إذا تم استخدامه أثناء الرفع"),
+    sparse_name: str = Query("text-sparse", description="اسم متجه sparse BM25")
+):
+    """
+    البحث الهجين في Qdrant يجمع بين متجهات Dense الشبهية ومتجهات Sparse BM25 باستخدام RRF (Reciprocal Rank Fusion)
+    """
+    try:
+        client = get_qdrant_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="Qdrant client not available")
+
+        # 1. Compute Dense Query Vector
+        embed_api_key = os.environ.get("EMBED_API_KEY")
+        if use_cohere or embed_api_key:
+            if not embed_api_key:
+                raise HTTPException(status_code=400, detail="EMBED_API_KEY not set")
+            query_text = q[:500] if len(q) > 500 else q
+            headers = {"Authorization": f"Bearer {embed_api_key}", "Content-Type": "application/json"}
+            payload = {"model": "embed-multilingual-v3.0", "texts": [query_text], "input_type": "search_query", "truncate": "NONE"}
+            import httpx
+            with httpx.Client(timeout=60) as http_client:
+                r = http_client.post("https://api.cohere.com/v1/embed", json=payload, headers=headers)
+                if r.status_code != 200:
+                    raise RuntimeError(f"Cohere API error {r.status_code}: {r.text}")
+                data = r.json()
+                embeddings = data.get("embeddings", [])
+                if not embeddings:
+                    raise RuntimeError("No embeddings returned from Cohere")
+                dense_vector = embeddings[0]
+        else:
+            model = get_embedding_model()
+            if model is None:
+                raise HTTPException(status_code=503, detail="Embedding model not available")
+            dense_vector = model.encode(q).tolist()
+
+        # 2. Compute Sparse Query Vector (BM25)
+        from qdrant_upload import BM25SparseEncoder
+        sparse_encoder = BM25SparseEncoder()
+        sparse_res = sparse_encoder.encode_text(q)
+        
+        from qdrant_client.http import models as rest
+        sparse_vector = rest.SparseVector(
+            indices=sparse_res["indices"],
+            values=sparse_res["values"]
+        )
+
+        # 3. Perform Qdrant RRF Hybrid Query
+        search_result = client.query_points(
+            collection_name=collection,
+            prefetch=[
+                rest.Prefetch(
+                    query=dense_vector,
+                    using=dense_name if dense_name else "",
+                    limit=limit * 2,
+                ),
+                rest.Prefetch(
+                    query=sparse_vector,
+                    using=sparse_name,
+                    limit=limit * 2,
+                ),
+            ],
+            query=rest.FusionQuery(fusion=rest.Fusion.RRF),
+            limit=limit,
+        ).points
+
+        results = []
+        for point in search_result:
+            payload = point.payload or {}
+            results.append({
+                "id": point.id,
+                "score": point.score,
+                "content": payload.get("content", ""),
+                "metadata": payload.get("metadata", {})
+            })
+
+        return {
+            "query": q,
+            "collection": collection,
+            "search_type": "hybrid_rrf",
+            "count": len(results),
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Hybrid Search error: {str(e)}")
+
+
 @app.get("/article/{article_id}", response_class=JSONResponse)
 def get_article(article_id: str):
     aid = normalize_query(article_id)
@@ -307,6 +399,14 @@ def upload_form():
               </select>
               <p class="hint">اختر "search_document" لتخزين المستندات أو "search_query" للبحث عنها</p>
             </div>
+
+            <label>البحث الهجين (BM25 Sparse Vector)</label>
+            <select id="sparseMode" name="sparse_mode">
+              <option value="native" selected>مفعل - BM25 محلي (Native BM25 - بدون أوزان ثقيلة)</option>
+              <option value="fastembed">مفعل - FastEmbed BM25 (يحتاج fastembed)</option>
+              <option value="none">معطّل - تضمين كثيف فقط (Dense Only)</option>
+            </select>
+            <p class="hint">عند التفعيل، يتم إنشاء واستخراج متجهات BM25 الضئيلة لدعم البحث الهجين (Hybrid Search) باستخدام RRF في Qdrant</p>
 
             <label>حجم التضمين (Vector Dimension)</label>
             <input id="vectorSize" name="vector_size" type="number" placeholder="1024" value="1024" min="1" max="4096" required />
@@ -443,7 +543,7 @@ def set_job_status(job_id: str, status: str, error: str = '', message: str = '')
             job['finished_at'] = datetime.utcnow().isoformat() + 'Z'
 
 
-def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system_name: str, qdrant_url: str, qdrant_api_key: str, embed_api_key: str, log_path: Path, upload_mode: str = 'overwrite', embedding_source: str = 'local', local_model_name: str = 'all-MiniLM-L6-v2', api_model_name: str = '', embed_api_url: str = '', vector_size: str = '1024', distance_type: str = 'cosine', cohere_input_type: str = 'classification', batch_size: str = '3000', gemini_batch_size: str = '10'):
+def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system_name: str, qdrant_url: str, qdrant_api_key: str, embed_api_key: str, log_path: Path, upload_mode: str = 'overwrite', embedding_source: str = 'local', local_model_name: str = 'all-MiniLM-L6-v2', api_model_name: str = '', embed_api_url: str = '', vector_size: str = '1024', distance_type: str = 'cosine', cohere_input_type: str = 'classification', batch_size: str = '3000', gemini_batch_size: str = '10', sparse_mode: str = 'native'):
     set_job_status(job_id, 'running')
     env = os.environ.copy()
     if qdrant_api_key:
@@ -475,7 +575,9 @@ def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system
         '--upload-mode', upload_mode,
         '--distance-type', distance_type,
         '--cohere-input-type', cohere_input_type,
-        '--gemini-batch-size', gemini_batch_size
+        '--gemini-batch-size', gemini_batch_size,
+        '--enable-sparse', 'true' if sparse_mode != 'none' else 'false',
+        '--sparse-mode', sparse_mode
     ]
     with open(log_path, 'w', encoding='utf-8') as logf:
         proc = subprocess.run(cmd, env=env, cwd=str(Path(__file__).parent), stdout=logf, stderr=logf)
@@ -486,7 +588,7 @@ def _run_uploader_script(job_id: str, upload_path: Path, collection: str, system
 
 
 @app.post("/admin/upload", response_class=JSONResponse)
-def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), system_name: str = Form(...), collection: str = Form(...), qdrant_url: str = Form(...), qdrant_api_key: str = Form(''), embed_api_key: str = Form(''), upload_mode: str = Form('overwrite'), embedding_source: str = Form('local'), local_model_name: str = Form('all-MiniLM-L6-v2'), api_model_name: str = Form(''), embed_api_url: str = Form(''), vector_size: str = Form('1024'), distance_type: str = Form('cosine'), cohere_input_type: str = Form('classification'), batch_size: str = Form('3000'), gemini_batch_size: str = Form('10')):
+def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), system_name: str = Form(...), collection: str = Form(...), qdrant_url: str = Form(...), qdrant_api_key: str = Form(''), embed_api_key: str = Form(''), upload_mode: str = Form('overwrite'), embedding_source: str = Form('local'), local_model_name: str = Form('all-MiniLM-L6-v2'), api_model_name: str = Form(''), embed_api_url: str = Form(''), vector_size: str = Form('1024'), distance_type: str = Form('cosine'), cohere_input_type: str = Form('classification'), batch_size: str = Form('3000'), gemini_batch_size: str = Form('10'), sparse_mode: str = Form('native')):
     upload_id = str(uuid.uuid4())
     uploads_dir = UPLOADS_DIR
     extension = Path(file.filename).suffix.lower() if file.filename else '.json'
@@ -508,7 +610,7 @@ def handle_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...
         'created_at': str(Path().absolute()),
         'finished_at': '',
     }
-    background_tasks.add_task(_run_uploader_script, upload_id, upload_path, collection, system_name, qdrant_url, qdrant_api_key, embed_api_key, log_path, upload_mode, embedding_source, local_model_name, api_model_name, embed_api_url, vector_size, distance_type, cohere_input_type, batch_size, gemini_batch_size)
+    background_tasks.add_task(_run_uploader_script, upload_id, upload_path, collection, system_name, qdrant_url, qdrant_api_key, embed_api_key, log_path, upload_mode, embedding_source, local_model_name, api_model_name, embed_api_url, vector_size, distance_type, cohere_input_type, batch_size, gemini_batch_size, sparse_mode)
     return {'status': 'started', 'job_id': upload_id, 'collection': collection, 'log': str(log_path)}
 
 
