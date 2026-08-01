@@ -27,7 +27,8 @@ USER appuser
 
 # تعريض المنفذ الافتراضي لتوافق Coolify و Docker
 ENV PORT=8000
-EXPOSE 8000
+EXPOSE 8000 3000
+
 
 # Health check يستخدم قيمة PORT الديناميكية
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
