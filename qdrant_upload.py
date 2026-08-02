@@ -148,8 +148,8 @@ def get_sparse_encoder(mode: str = "native"):
                     return res
 
             return FastEmbedSparseEncoder()
-        except ImportError:
-            print("⚠️  fastembed not installed. Falling back to native BM25SparseEncoder.")
+        except Exception as e:
+            print(f"⚠️  fastembed unavailable ({e}). Falling back to native BM25SparseEncoder.")
             return BM25SparseEncoder()
     return BM25SparseEncoder()
 
