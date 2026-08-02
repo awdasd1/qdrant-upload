@@ -58,14 +58,15 @@ import urllib.parse as urlparse
 
 
 def remove_diacritics(text: str) -> str:
-    """إزالة التشكيل (الحروف الإضافية مثل الفتحات والضمات والسكونات) من النص العربي"""
+    """إزالة علامات التشكيل (الحركات مثل الفتحة والضمة والكسرة والسكون والتنوين والشدة) مع الإبقاء على جميع أنواع الهمزات"""
     if not isinstance(text, str):
         return str(text)
-    # تطبيع النص وإزالة الحروف المركبة
-    text = unicodedata.normalize('NFKD', text)
-    # إزالة جميع علامات التشكيل العربية
-    arabic_diacritics = re.compile(r'[\u064B-\u065F]')
+    # إعادة تجميع الحروف المركبة أولاً لحماية الهمزات (أ، إ، آ، ؤ، ئ)
+    text = unicodedata.normalize('NFC', text)
+    # إزالة علامات التشكيل العربية (الحركات والتنوين والشدة والألف الخنجرية) فقط
+    arabic_diacritics = re.compile(r'[\u064B-\u0652\u0670]')
     return arabic_diacritics.sub('', text)
+
 
 
 class BM25SparseEncoder:
