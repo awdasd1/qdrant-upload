@@ -155,6 +155,26 @@ def get_sparse_encoder(mode: str = "native"):
 
 
 
+def extract_text(item) -> str:
+    """استخراج النص من العنصر بغض النظر عن نوعه أو اسم الحقل"""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return (
+            item.get("نص المادة")
+            or item.get("content")
+            or item.get("Content")
+            or item.get("CONTENT")
+            or item.get("pageContent")
+            or item.get("page_content")
+            or item.get("text")
+            or item.get("Text")
+            or item.get("النص")
+            or ""
+        )
+    return str(item) if item is not None else ""
+
+
 def parse_text_to_articles(text: str, system_name: str):
     pattern = re.compile(r"^(المادة\s+(?:ال)?[^\n]+)$", re.MULTILINE)
     parts = pattern.split(text)
@@ -171,6 +191,20 @@ def parse_text_to_articles(text: str, system_name: str):
                 "رقم المادة رقما": len(articles) + 1,
                 "رقم المادة كتابة": article_label,
                 "نص المادة": article_text,
+                "اسم النظام": system_name
+            })
+
+    # دمج المعالجة البديلة للنصوص العادية التي لا تحتوي على تقسيم "المادة..."
+    if not articles:
+        paragraphs = [p.strip() for p in text.split('\n\n') if len(p.strip()) > 10]
+        if not paragraphs and len(text.strip()) > 0:
+            paragraphs = [text.strip()]
+        for idx, para in enumerate(paragraphs, 1):
+            clean_para = remove_diacritics(para)
+            articles.append({
+                "رقم المادة رقما": idx,
+                "رقم المادة كتابة": f"فقرة {idx}",
+                "نص المادة": clean_para,
                 "اسم النظام": system_name
             })
     return articles
@@ -238,6 +272,11 @@ def remove_diacritics_from_item(item):
 
 
 def make_payload(item, pid=None, source_type='txt'):
+    if isinstance(item, str):
+        item = {"نص المادة": item}
+    elif not isinstance(item, dict):
+        item = {"نص المادة": str(item)}
+
     # Determine human-readable article label
     article_label = item.get("رقم المادة كتابة") or item.get("رقم المادة") or item.get("part") or item.get("رقم الجزء") or ""
 
@@ -248,32 +287,26 @@ def make_payload(item, pid=None, source_type='txt'):
             numeric = int(item.get("رقم المادة رقما", 0))
         except Exception:
             numeric = item.get("رقم المادة رقما", 0)
-    elif "id" in item:
+    elif "id" in item or "ID" in item:
+        raw_id = item.get("id") if "id" in item else item.get("ID")
         try:
-            numeric = int(item.get("id", 0))
+            numeric = int(raw_id)
         except Exception:
-            numeric = item.get("id", 0)
+            numeric = raw_id
     elif pid is not None:
         numeric = int(pid)
 
-    text_content = item.get("نص المادة", "") or item.get("content", "")
+    text_content = extract_text(item)
     metadata = {
-        "المصدر": item.get("اسم النظام", item.get("book_name", "نظام المعاملات المدنية")),
+        "المصدر": item.get("اسم النظام", item.get("book_name", item.get("المصدر", "نظام المعاملات المدنية"))),
         "رقم المادة رقما": numeric,
         "رقم المادة كتابة": article_label,
-        "رقم الجزء": item.get("رقم الجزء", item.get("part", "")),
-        "رقم الصفحة": item.get("رقم الصفحة", item.get("page", ""))
+        "رقم الجزء": item.get("رقم الجزء", item.get("part", item.get("Part", ""))),
+        "رقم الصفحة": item.get("رقم الصفحة", item.get("page", item.get("Page", "")))
     }
 
-    # Adjust metadata fields according to source type
-    if source_type == 'txt':
-        # For plain text systems, remove book/page fields
-        metadata.pop("رقم الجزء", None)
-        metadata.pop("رقم الصفحة", None)
-    elif source_type == 'csv':
-        # For CSV/books, remove article-specific fields
-        metadata.pop("رقم المادة رقما", None)
-        metadata.pop("رقم المادة كتابة", None)
+    # Clean up empty metadata fields
+    metadata = {k: v for k, v in metadata.items() if v is not None and v != ""}
 
     payload = {
         "content": text_content,
@@ -730,7 +763,7 @@ def upload(args):
     payloads = []
 
     for i, item in enumerate(tqdm(data, desc="Preparing")):
-        txt = item.get("نص المادة", "")
+        txt = extract_text(item)
         payload = make_payload(item, pid=i + 1, source_type=source_type)
         batch_texts.append(txt)
         ids.append(i + 1)  # 1-based id
